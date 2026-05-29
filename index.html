@@ -366,7 +366,7 @@
   </div>
 
   <!-- Button -->
-  <button class="btn-analyze" id="btnAnalyze" disabled onclick="startAnalysis()">
+  <button class="btn-analyze" id="btnAnalyze" onclick="startAnalysis()">
     분석하기 ↗
   </button>
   <button class="btn-stop" id="btnStop" style="display:none" onclick="stopAnalysis()">⏹ 중단</button>
@@ -615,7 +615,10 @@ function updateOverall(avg, aiN, total) {
 
 // ─── MAIN ANALYSIS ───────────────────────
 async function startAnalysis() {
-  if (currentText.trim().length < 80) return;
+  if (currentText.trim().length < 10) {
+    alert('텍스트를 입력해주세요 (최소 80자)');
+    return;
+  }
   if (abortCtrl) abortCtrl.abort();
   abortCtrl = new AbortController();
   isAnalyzing = true;
@@ -684,7 +687,16 @@ function updateCharCount() {
   const n = currentText.length;
   document.getElementById('charCount').textContent = n + '자';
   document.getElementById('charWarn').style.display = n < 80 && n > 0 ? 'block' : 'none';
-  document.getElementById('btnAnalyze').disabled = n < 80;
+  const btn = document.getElementById('btnAnalyze');
+  if (n >= 80) {
+    btn.disabled = false;
+    btn.style.opacity = '1';
+    btn.style.cursor = 'pointer';
+  } else {
+    btn.disabled = true;
+    btn.style.opacity = '0.3';
+    btn.style.cursor = 'not-allowed';
+  }
 }
 
 // ─── FILE UPLOAD ─────────────────────────
