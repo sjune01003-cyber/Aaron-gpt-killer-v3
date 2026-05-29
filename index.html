@@ -400,7 +400,21 @@
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-sonnet-4-20250514';
 
-const AI_MARKERS = ["또한","따라서","이에 따라","더불어","한편","즉","결론적으로","이처럼","이를 통해","이와 같이","뿐만 아니라","특히","이러한","나아가","더욱이","요약하면","종합하면","중요하다고","필요하다고","보인다","할 수 있다","할 것이다","해야 한다","해야 할","핵심은","해당","측면","관점에서","기반으로","바탕으로","고려하면","필요가 있다","검토해볼","주지할"];
+const AI_MARKERS = [
+  "또한","따라서","이에 따라","더불어","한편","즉","결론적으로","이처럼","이를 통해",
+  "이와 같이","뿐만 아니라","특히","이러한","나아가","더욱이","요약하면","종합하면",
+  "중요하다고","필요하다고","보인다","할 수 있다","할 것이다","해야 한다","해야 할",
+  "핵심은","해당","측면","관점에서","기반으로","바탕으로","고려하면","필요가 있다",
+  "검토해볼","주지할","살펴보면","알아보도록","생각해볼","논의할","제시하고자",
+  "분석하고자","살펴보고자","검토하고자","고찰하고자","밝히고자","알아보자",
+  "중요한 것은","중요한 점은","주목할 만한","강조할 수 있다","간과할 수 없다",
+  "이뿐만 아니라","이와 더불어","이를 바탕으로","이를 토대로","이를 고려할 때",
+  "앞서 언급한","앞서 살펴본","위에서 언급한","본 글에서는","본 논문에서는",
+  "이러한 점에서","이러한 맥락에서","이러한 측면에서","이러한 관점에서",
+  "적절한","효과적인","효율적인","체계적인","지속적인","다양한","구체적인",
+  "전반적으로","전체적으로","종합적으로","궁극적으로","근본적으로",
+  "명확히","분명히","반드시","필연적으로","당연히"
+];
 
 // ─── STATE ───────────────────────────────
 let currentText = '';
@@ -414,23 +428,47 @@ function heuristic(chunk) {
   const lens = sents.map(s => s.trim().length);
   const avg = lens.reduce((a,b)=>a+b,0) / (lens.length||1);
   const std = Math.sqrt(lens.reduce((a,b)=>a+(b-avg)**2,0) / (lens.length||1));
-  const burst = Math.min(100, (std/(avg||1))*180);
+  // 사람 글은 문장 길이 편차가 크다 — AI는 균일 → cv 낮을수록 AI
+  const cv = std / (avg||1);
+  const burst = Math.min(100, cv * 200); // 더 민감하게
 
+  // 마커 — 절대 개수 기반 + 밀도 기반 병행
   let mc = 0;
-  AI_MARKERS.forEach(m => { if (chunk.includes(m)) mc++; });
-  const ms = Math.max(0, 100-(mc/(words.length||1))*700);
+  let mcAbsolute = 0;
+  AI_MARKERS.forEach(m => { 
+    const matches = (chunk.match(new RegExp(m, 'g')) || []).length;
+    if (matches > 0) { mc++; mcAbsolute += matches; }
+  });
+  const markerDensity = mcAbsolute / (words.length||1);
+  // 마커 2개 이상이면 이미 의심, 밀도도 같이 봄
+  const msAbsolute = Math.max(0, 100 - mc * 18);        // 마커 1개당 18점 감점
+  const msDensity  = Math.max(0, 100 - markerDensity * 900);
+  const ms = Math.min(msAbsolute, msDensity);            // 더 낮은 쪽 채택
 
-  const unique = new Set(words.map(w=>w.toLowerCase().replace(/[.,!?]/g,'')));
-  const ttr = Math.min(100, (unique.size/(words.length||1))*140);
+  // 어휘 다양성 — AI는 다양해 보이지만 실제로는 제한적
+  const unique = new Set(words.map(w=>w.toLowerCase().replace(/[.,!?。]/g,'')));
+  const ttr = Math.min(100, (unique.size/(words.length||1))*130);
 
-  const ends = ['습니다','입니다','있다','된다','한다','보인다'];
+  // 문장 끝 어미 반복
+  const ends = ['습니다','입니다','있다','된다','한다','보인다','것이다','있다'];
   const ec = {};
   sents.forEach(s => { ends.forEach(e => { if(s.trim().endsWith(e)) ec[e]=(ec[e]||0)+1; }); });
   const maxE = Math.max(...Object.values(ec), 0);
-  const eu = sents.length > 2 ? maxE/(sents.length||1) : 0;
-  const es = Math.max(0, 100-eu*120);
+  const eu = sents.length > 1 ? maxE/(sents.length||1) : 0;
+  const es = Math.max(0, 100 - eu * 140);
 
-  return Math.round(Math.max(0, Math.min(100, 100-(burst*0.32+ms*0.36+ttr*0.17+es*0.15))));
+  // 단락 구조 — AI는 각 단락이 논리적 전개(도입-본론-결론) 형식으로 균일
+  const paraLens = chunk.split(/\n+/).filter(l=>l.trim().length>10).map(l=>l.trim().length);
+  const paraAvg = paraLens.reduce((a,b)=>a+b,0)/(paraLens.length||1);
+  const paraStd = Math.sqrt(paraLens.reduce((a,b)=>a+(b-paraAvg)**2,0)/(paraLens.length||1));
+  const paraVar = Math.min(100, (paraStd/(paraAvg||1))*160);
+
+  // 가중 합산 — 마커가 가장 강력한 신호
+  const humanScore = burst*0.20 + ms*0.42 + ttr*0.12 + es*0.16 + paraVar*0.10;
+  
+  // 기본 AI 편향 +12점 (분석 대상 텍스트는 대부분 AI 의심 상황)
+  const raw = 100 - humanScore + 12;
+  return Math.round(Math.max(0, Math.min(99, raw)));
 }
 
 // ─── CHUNK TEXT ──────────────────────────
@@ -453,41 +491,44 @@ function chunkText(text, size=420) {
   return cs;
 }
 
-// ─── PERPLEXITY API CALL ─────────────────
+// ─── PERPLEXITY API CALL (직접 판단 방식) ──
 async function measurePerplexity(chunk, signal) {
   const words = chunk.split(/\s+/).filter(w=>w.length>0);
-  if (words.length < 10) return { aiProb:50, level:'보통', jaccard:0 };
-
-  const split = Math.floor(words.length*0.58);
-  const prefix = words.slice(0,split).join(' ');
-  const actual = words.slice(split).join(' ');
-  const targetLen = words.slice(split).length;
+  if (words.length < 8) return { aiProb:50, level:'보통' };
 
   const res = await fetch(API_URL, {
     method: 'POST', signal,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: MODEL,
-      max_tokens: 200,
-      system: '텍스트 자동완성기입니다. 주어진 텍스트 뒷부분을 자연스럽게 이어 쓰세요. 오직 이어지는 텍스트만 반환하고 설명 없이 그대로 작성하세요.',
-      messages: [{ role:'user', content:`다음 텍스트를 이어서 완성하세요 (약 ${targetLen}단어):\n\n${prefix}` }]
+      max_tokens: 80,
+      system: `당신은 AI 텍스트 탐지 전문가입니다. 
+주어진 텍스트가 ChatGPT, Claude 등 AI가 생성했을 확률을 0~100으로 판단하세요.
+
+판단 기준:
+- AI 연결어 과다 사용(또한, 따라서, 이처럼, 결론적으로 등)
+- 문장 구조가 균일하고 예측 가능함
+- 감정/개성 없이 설명적·백과사전식 문체
+- 단락마다 도입-본론-결론 패턴 반복
+- 지나치게 정형화된 학술/보고서 어투
+
+반드시 JSON만 반환: {"aiProb":숫자,"level":"낮음|보통|높음","signal":"핵심근거 한줄"}`,
+      messages: [{ role:'user', content:`다음 텍스트의 AI 생성 확률을 판단하세요:\n\n${chunk.slice(0,700)}` }]
     })
   });
 
   const data = await res.json();
-  const predicted = data.content?.find(c=>c.type==='text')?.text?.trim()||'';
-
-  const aW = new Set(actual.split(/\s+/).map(w=>w.toLowerCase().replace(/[.,!?]/g,'')).filter(w=>w.length>1));
-  const pW = new Set(predicted.split(/\s+/).map(w=>w.toLowerCase().replace(/[.,!?]/g,'')).filter(w=>w.length>1));
-  const inter = [...aW].filter(w=>pW.has(w)).length;
-  const union = new Set([...aW,...pW]).size;
-  const j = union > 0 ? inter/union : 0;
-
-  return {
-    aiProb: Math.min(96, Math.round(j*290)),
-    level: j < 0.09 ? '높음' : j < 0.21 ? '보통' : '낮음',
-    jaccard: Math.round(j*100)
-  };
+  const raw = data.content?.find(c=>c.type==='text')?.text?.trim()||'{}';
+  try {
+    const parsed = JSON.parse(raw.replace(/```[a-z]*|```/g,'').trim());
+    return {
+      aiProb: Math.max(0, Math.min(99, parsed.aiProb ?? 50)),
+      level: parsed.level ?? '보통',
+      signal: parsed.signal ?? ''
+    };
+  } catch {
+    return { aiProb: 50, level: '보통', signal: '' };
+  }
 }
 
 // ─── COLOR HELPERS ───────────────────────
@@ -556,7 +597,7 @@ function renderChunkCard(chunk, i, analyzing=false) {
     </div>` : `<div class="shimmer"></div><div class="shimmer" style="width:70%"></div>`}
 
     <div class="chunk-text">${preview.replace(/</g,'&lt;')}</div>
-  `;
+    ${chunk.signal ? `<div style="margin-top:8px;padding-top:8px;border-top:1px solid ${s.border};font-size:11px;color:var(--text3)">💡 ${chunk.signal}</div>` : ''}
 }
 
 function updateOverall(avg, aiN, total) {
@@ -595,11 +636,13 @@ async function startAnalysis() {
     if (abortCtrl.signal.aborted) break;
     setStage(`Perplexity 예측 분석 중 (${i+1} / ${parts.length})`);
     try {
-      const { aiProb, level, jaccard } = await measurePerplexity(parts[i], abortCtrl.signal);
+      const { aiProb, level, signal } = await measurePerplexity(parts[i], abortCtrl.signal);
       results[i].pScore = aiProb;
-      results[i].finalScore = Math.round(results[i].hScore*0.36 + aiProb*0.64);
+      const baseAvg = Math.round(results[i].hScore*0.50 + aiProb*0.50);
+      const maxBoost = Math.round(Math.max(results[i].hScore, aiProb) * 0.15);
+      results[i].finalScore = Math.min(99, baseAvg + maxBoost);
       results[i].level = level;
-      results[i].jaccard = jaccard;
+      results[i].signal = signal || '';
       renderChunkCard(results[i], i, false);
     } catch(e) {
       if (abortCtrl.signal.aborted) break;
